@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import "./app.css";
 
 /* ---------- config ---------- */
 const API_URL = "http://localhost:5179/chat";
@@ -10,11 +11,10 @@ Never dump definitions before the analogy. Ask exactly one check question.`;
 
 /* ---------- helpers ---------- */
 function maskAnswersForDisplay(text) {
-  // strip possible markdown fences and hide answers in any JSON the model prints
   return text
     .replace(/```json|```/gi, "")
-    .replace(/("answer"\s*:\s*")([^"]*)(")/gi, '$1(hidden)$3')
-    .replace(/("correct_answer"\s*:\s*")([^"]*)(")/gi, '$1(hidden)$3');
+    .replace(/("answer"\\s*:\\s*")([^"]*)(")/gi, '$1(hidden)$3')
+    .replace(/("correct_answer"\\s*:\\s*")([^"]*)(")/gi, '$1(hidden)$3');
 }
 
 function evaluateAnswer(question, userAnswer) {
@@ -37,21 +37,8 @@ function evaluateAnswer(question, userAnswer) {
 function Bubble({ role, children }) {
   const isUser = role === "user";
   return (
-    <div
-      style={{
-        maxWidth: "85%",
-        padding: "12px 14px",
-        borderRadius: 16,
-        margin: isUser ? "8px 0 8px auto" : "8px 0",
-        background: isUser ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.08)",
-        border: isUser ? "1px solid rgba(99,102,241,0.45)" : "1px solid rgba(255,255,255,0.08)",
-        whiteSpace: "pre-wrap",
-      }}
-    >
-      <div style={{ opacity: 0.7, fontSize: 12, marginBottom: 6 }}>
-        {isUser ? "You" : "LearnPlay"}
-      </div>
-      {children}
+    <div className={`message-bubble ${isUser ? "user-message" : "assistant-message"}`}>
+      <div className="message-content">{children}</div>
     </div>
   );
 }
@@ -64,19 +51,21 @@ function QuizQuestion({ q, index, onScored }) {
     const correct = evaluateAnswer(q, userAns);
     setResult(correct);
 
-    // update progress in localStorage
     const progress = JSON.parse(localStorage.getItem("progress") || "{}");
     progress.total = (progress.total || 0) + 1;
     progress.correct = (progress.correct || 0) + (correct ? 1 : 0);
     localStorage.setItem("progress", JSON.stringify(progress));
-    onScored?.(); // ask parent to re-render
+    onScored?.();
   }
 
   return (
-    <div style={{ marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(255,255,255,0.05)" }}>
-      <b>Q{index + 1}:</b> {q.q || q.question}
+    <div className="quiz-question">
+      <div className="question-header">
+        <span className="question-number">Question {index + 1}</span>
+      </div>
+      <p className="question-text">{q.q || q.question}</p>
       {q.type === "mcq" && Array.isArray(q.options) && (
-        <ul style={{ listStyle: "none", paddingLeft: 0, marginTop: 6 }}>
+        <ul className="quiz-options">
           {q.options.map((o, j) => (
             <li key={j}>{o}</li>
           ))}
@@ -86,14 +75,14 @@ function QuizQuestion({ q, index, onScored }) {
         value={userAns}
         onChange={(e) => setUserAns(e.target.value)}
         placeholder="Your answer (e.g., A, 22, or a sentence)"
-        style={{ marginTop: 8, width: "100%", padding: 8, borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)", color: "white" }}
+        className="quiz-input"
       />
-      <button onClick={check} style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontWeight: 700, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(99,102,241,0.9)" }}>
-        Check
+      <button onClick={check} className="btn-check">
+        Check Answer
       </button>
       {result !== null && (
-        <div style={{ marginTop: 6, color: result ? "lightgreen" : "salmon" }}>
-          {result ? "✅ Correct!" : `❌ Wrong! (Answer: ${q.answer ?? q.correct_answer})`}
+        <div className={`result ${result ? "correct" : "incorrect"}`}>
+          {result ? "✅ Correct! Great job!" : `❌ Not quite. The answer is: ${q.answer ?? q.correct_answer}`}
         </div>
       )}
     </div>
@@ -106,21 +95,23 @@ export default function App() {
   const [messages, setMessages] = useState([{ role: "system", content: SYSTEM_PROMPT }]);
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [quiz, setQuiz] = useState(() => {
     const s = localStorage.getItem("quiz");
     return s ? JSON.parse(s) : null;
   });
-  const [tick, setTick] = useState(0); // force re-render when progress changes
+  const [tick, setTick] = useState(0);
   const viewRef = useRef(null);
 
   useEffect(() => {
     viewRef.current?.scrollTo({ top: viewRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, isStreaming]);
 
   async function send(content) {
     const next = [...messages, { role: "user", content }];
     setMessages(next);
     setLoading(true);
+    setIsStreaming(false);
 
     const res = await fetch(API_URL, {
       method: "POST",
@@ -128,15 +119,16 @@ export default function App() {
       body: JSON.stringify({ messages: next, stream: true }),
     });
 
-    // placeholder for streaming assistant message
+    setLoading(false);
+    setIsStreaming(true);
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
     const assistantIndex = next.length;
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
 
-    let accRaw = ""; // real text (with answers)
-    let accMasked = ""; // UI-masked version
+    let accRaw = "";
+    let accMasked = "";
 
     while (true) {
       const { value, done } = await reader.read();
@@ -161,7 +153,6 @@ export default function App() {
       }
     }
 
-    // Try to parse quiz JSON from RAW text (not the masked one)
     try {
       const raw = accRaw.trim();
       const start = raw.indexOf("{");
@@ -178,7 +169,7 @@ export default function App() {
       // ignore non-JSON replies
     }
 
-    setLoading(false);
+    setIsStreaming(false);
   }
 
   function startExplain() {
@@ -190,108 +181,55 @@ export default function App() {
   const progress = JSON.parse(localStorage.getItem("progress") || "{}");
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        color: "white",
-        background: "linear-gradient(135deg, #7c3aed 0%, #4338ca 40%, #0f172a 100%)",
-      }}
-    >
-      <div style={{ maxWidth: 960, margin: "0 auto", padding: 16 }}>
-        {/* header */}
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 12,
-          }}
-        >
-          <h1 style={{ fontWeight: 800, letterSpacing: 0.5 }}>
-            Learn<span style={{ color: "#f0abfc" }}>Play</span>
-          </h1>
-          <div
-            style={{
-              padding: "6px 10px",
-              borderRadius: 999,
-              fontSize: 12,
-              background: loading ? "rgba(16,185,129,0.35)" : "rgba(16,185,129,0.15)",
-              border: "1px solid rgba(16,185,129,0.45)",
-            }}
-          >
-            {loading ? "Thinking…" : "Ready"}
+    <div className="app-container">
+      <div className="app-wrapper">
+        {/* Header */}
+        <header className="app-header">
+          <div className="header-left">
+            <div className="logo-circle">LP</div>
+            <h1 className="app-title">LearnPlay</h1>
+          </div>
+          <div className="header-right">
+            <div className="progress-display">
+              🏅 <strong>{progress.correct || 0}</strong> / {progress.total || 0}
+            </div>
           </div>
         </header>
 
-        {/* progress tracker */}
-        <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-          🏅 Score: {progress.correct || 0}/{progress.total || 0}
-        </p>
-
-        {/* two-column layout */}
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "320px 1fr" }}>
-          {/* left controls */}
-          <aside
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Topic</label>
-            <input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder='e.g., "Backpropagation" or "Eigenvalues"'
-              style={{
-                width: "100%",
-                marginTop: 6,
-                marginBottom: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                outline: "none",
-                border: "1px solid rgba(255,255,255,0.15)",
-                background: "rgba(255,255,255,0.08)",
-                color: "white",
-              }}
-            />
-            <button
-              onClick={startExplain}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 12,
-                fontWeight: 700,
-                border: "1px solid rgba(255,255,255,0.15)",
-                background: "linear-gradient(90deg, rgba(217,70,239,0.9), rgba(244,63,94,0.9))",
-              }}
-            >
-              Teach Me
-            </button>
-
-            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-              <button
-                onClick={() =>
-                  send(
-                    `Create a short co-relation mapping for "${topic || "my topic"}" to badminton or cooking, include a 2-row table and ask one reflection question.`
-                  )
-                }
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-              >
-                Co-Relate
+        {/* Main Layout */}
+        <div className="main-layout">
+          {/* Sidebar */}
+          <aside className="sidebar">
+            <div className="sidebar-section">
+              <label className="input-label">What do you want to learn?</label>
+              <input
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder='e.g., "Backpropagation"'
+                className="topic-input"
+              />
+              <button onClick={startExplain} className="btn-primary">
+                🎓 Teach Me
               </button>
-              <button
-                onClick={() =>
-                  send(
-                    `Create 3 questions for "${topic || "my topic"}".
+            </div>
+
+            <div className="sidebar-section">
+              <h3 className="section-title">Learning Tools</h3>
+              <div className="button-group">
+                <button
+                  onClick={() =>
+                    send(
+                      `Create a short co-relation mapping for "${topic || "my topic"}" to badminton or cooking, include a 2-row table and ask one reflection question.`
+                    )
+                  }
+                  className="btn-tool"
+                >
+                  🔗 Co-Relate
+                </button>
+                <button
+                  onClick={() =>
+                    send(
+                      `Create 3 questions for "${topic || "my topic"}".
 Return STRICT JSON ONLY (no markdown fences).
 Schema:
 {"questions":[
@@ -300,117 +238,86 @@ Schema:
  {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
 ]}
 Do not add commentary. Do not include any text outside the JSON.`
-                  )
-                }
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-              >
-                Quiz Me
-              </button>
-              <button
-                onClick={() =>
-                  send(
-                    `Make it fun: turn "${topic || "my topic"}" into a 120-word playful scene with one micro-challenge at the end.`
-                  )
-                }
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-              >
-                Make It Fun
-              </button>
+                    )
+                  }
+                  className="btn-tool"
+                >
+                  📝 Quiz Me
+                </button>
+                <button
+                  onClick={() =>
+                    send(
+                      `Make it fun: turn "${topic || "my topic"}" into a 120-word playful scene with one micro-challenge at the end.`
+                    )
+                  }
+                  className="btn-tool"
+                >
+                  🎮 Make It Fun
+                </button>
+              </div>
             </div>
-
-            <p style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>
-              Model: local Ollama • Streams in real-time
-            </p>
           </aside>
 
-          {/* right chat + quiz */}
-          <main
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-              display: "flex",
-              flexDirection: "column",
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            {/* chat window */}
-            <div ref={viewRef} style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
-              {messages
-                .filter((m) => m.role !== "system")
-                .map((m, i) => (
-                  <Bubble key={i} role={m.role}>
-                    {m.content}
-                  </Bubble>
-                ))}
-              {loading && <div style={{ opacity: 0.7, fontSize: 14 }}>…streaming</div>}
-            </div>
-
-            {/* input row */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!userInput.trim()) return;
-                send(userInput);
-                setUserInput("");
-              }}
-              style={{ display: "flex", gap: 8, marginTop: 8 }}
-            >
-              <input
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                placeholder="Ask or answer the check question…"
-                style={{
-                  flex: 1,
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  outline: "none",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                  color: "white",
-                }}
-              />
-              <button
-                style={{
-                  padding: "10px 16px",
-                  borderRadius: 12,
-                  fontWeight: 700,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(99,102,241,0.9)",
-                }}
-              >
-                Send
-              </button>
-            </form>
-
-            {/* quiz section */}
-            {Array.isArray(quiz) && quiz.length > 0 && (
-              <div
-                style={{
-                  marginTop: 16,
-                  borderTop: "1px solid rgba(255,255,255,0.1)",
-                  paddingTop: 12,
-                }}
-              >
-                <h3 style={{ fontSize: 16, marginBottom: 8 }}>📘 Quiz Time</h3>
-                {quiz.map((q, i) => (
-                  <QuizQuestion key={i} index={i} q={q} onScored={() => setTick((t) => t + 1)} />
-                ))}
+          {/* Main Content */}
+          <main className="main-content">
+            <div className="chat-container">
+              <div ref={viewRef} className="chat-messages">
+                {messages
+                  .filter((m) => m.role !== "system")
+                  .map((m, i) => (
+                    <Bubble key={i} role={m.role}>
+                      {m.content}
+                    </Bubble>
+                  ))}
+                {loading && (
+                  <div className="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                )}
               </div>
-            )}
+
+              {/* Input Form */}
+              <div className="chat-input-container">
+                <input
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!userInput.trim()) return;
+                      send(userInput);
+                      setUserInput("");
+                    }
+                  }}
+                  placeholder="Type your magic spell..."
+                  className="chat-input"
+                />
+                <button
+                  onClick={() => {
+                    if (!userInput.trim()) return;
+                    send(userInput);
+                    setUserInput("");
+                  }}
+                  className="btn-send"
+                >
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M2 10L18 2L10 18L8 11L2 10Z" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Quiz Section */}
+              {Array.isArray(quiz) && quiz.length > 0 && (
+                <div className="quiz-section">
+                  <h3 className="quiz-title">📘 Quiz Time</h3>
+                  {quiz.map((q, i) => (
+                    <QuizQuestion key={i} index={i} q={q} onScored={() => setTick((t) => t + 1)} />
+                  ))}
+                </div>
+              )}
+            </div>
           </main>
         </div>
       </div>
