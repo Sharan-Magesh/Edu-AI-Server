@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import "./app.css";
 
 /* ---------- endpoints ---------- */
 const CHAT_URL = "http://localhost:5179/chat";
@@ -16,8 +17,8 @@ Never dump definitions before the analogy. Ask exactly one check question.`;
 function maskAnswersForDisplay(text) {
   return text
     .replace(/```json|```/gi, "")
-    .replace(/("answer"\s*:\s*")([^"]*)(")/gi, '$1(hidden)$3')
-    .replace(/("correct_answer"\s*:\s*")([^"]*)(")/gi, '$1(hidden)$3');
+    .replace(/("answer"\\s*:\\s*")([^"]*)(")/gi, '$1(hidden)$3')
+    .replace(/("correct_answer"\\s*:\\s*")([^"]*)(")/gi, '$1(hidden)$3');
 }
 
 function evaluateAnswer(question, userAnswer) {
@@ -52,25 +53,17 @@ async function uploadFile(file) {
   return res.json();
 }
 
-/* ---------- small UI pieces ---------- */
+/* ---------- UI Components ---------- */
 function Bubble({ role, children }) {
   const isUser = role === "user";
   return (
-    <div
-      style={{
-        maxWidth: "85%",
-        padding: "12px 14px",
-        borderRadius: 16,
-        margin: isUser ? "8px 0 8px auto" : "8px 0",
-        background: isUser ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.08)",
-        border: isUser ? "1px solid rgba(99,102,241,0.45)" : "1px solid rgba(255,255,255,0.08)",
-        whiteSpace: "pre-wrap",
-      }}
-    >
-      <div style={{ opacity: 0.7, fontSize: 12, marginBottom: 6 }}>
-        {isUser ? "You" : "LearnPlay"}
+    <div className={`message-bubble ${isUser ? "user-message" : "assistant-message"}`}>
+      <div className="avatar-container">
+        <div className={`avatar ${isUser ? "user-avatar" : "assistant-avatar"}`}>
+          {isUser ? "🧑" : "🤖"}
+        </div>
       </div>
-      {children}
+      <div className="message-content">{children}</div>
     </div>
   );
 }
@@ -87,17 +80,21 @@ function QuizQuestion({ q, index, onScored }) {
     progress.total = (progress.total || 0) + 1;
     progress.correct = (progress.correct || 0) + (correct ? 1 : 0);
     localStorage.setItem("progress", JSON.stringify(progress));
-
     onScored?.();
   }
 
   return (
-    <div style={{ marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(255,255,255,0.05)" }}>
-      <b>Q{index + 1}:</b> {q.q || q.question}
+    <div className="quiz-question">
+      <div className="question-header">
+        <span className="question-number">Q{index + 1}</span>
+      </div>
+      <p className="question-text">{q.q || q.question}</p>
       {q.type === "mcq" && Array.isArray(q.options) && (
-        <ul style={{ listStyle: "none", paddingLeft: 0, marginTop: 6 }}>
+        <ul className="quiz-options">
           {q.options.map((o, j) => (
-            <li key={j}>{o}</li>
+            <li key={j} className="quiz-option-item">
+              <div className="option-marker"></div> {o}
+            </li>
           ))}
         </ul>
       )}
@@ -105,32 +102,19 @@ function QuizQuestion({ q, index, onScored }) {
         value={userAns}
         onChange={(e) => setUserAns(e.target.value)}
         placeholder="Your answer (e.g., A, 22, or a sentence)"
-        style={{
-          marginTop: 8,
-          width: "100%",
-          padding: 8,
-          borderRadius: 8,
-          border: "1px solid rgba(255,255,255,0.15)",
-          background: "rgba(255,255,255,0.08)",
-          color: "white",
-        }}
+        className="quiz-input"
       />
-      <button
-        onClick={check}
-        style={{
-          marginTop: 8,
-          padding: "8px 12px",
-          borderRadius: 10,
-          fontWeight: 700,
-          border: "1px solid rgba(255,255,255,0.15)",
-          background: "rgba(99,102,241,0.9)",
-        }}
-      >
-        Check
+      <button onClick={check} className="btn-check">
+        Check Answer
       </button>
       {result !== null && (
-        <div style={{ marginTop: 6, color: result ? "lightgreen" : "salmon" }}>
-          {result ? "✅ Correct!" : `❌ Wrong! (Answer: ${q.answer ?? q.correct_answer})`}
+        <div className={`result ${result ? "correct" : "incorrect"}`}>
+          <span className="result-icon">{result ? "✅" : "❌"}</span>
+          <span className="result-text">
+            {result
+              ? "Correct! Great job!"
+              : `Not quite. The answer is: ${q.answer ?? q.correct_answer}`}
+          </span>
         </div>
       )}
     </div>
@@ -143,17 +127,10 @@ export default function App() {
   const [messages, setMessages] = useState([{ role: "system", content: SYSTEM_PROMPT }]);
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const [quiz, setQuiz] = useState(() => {
-    const s = localStorage.getItem("quiz");
-    return s ? JSON.parse(s) : null;
-  });
+  const [quiz, setQuiz] = useState(() => JSON.parse(localStorage.getItem("quiz") || "null"));
   const [tick, setTick] = useState(0);
-
-  // document-aware flags (lives in Topic panel)
   const [docReady, setDocReady] = useState(false);
   const [docName, setDocName] = useState("");
-
   const viewRef = useRef(null);
 
   useEffect(() => {
@@ -162,7 +139,6 @@ export default function App() {
 
   const progress = JSON.parse(localStorage.getItem("progress") || "{}");
 
-  /* ---------- normal chat send ---------- */
   async function send(content) {
     const next = [...messages, { role: "user", content }];
     setMessages(next);
@@ -179,7 +155,6 @@ export default function App() {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-
     let accRaw = "";
     let accMasked = "";
 
@@ -208,9 +183,8 @@ export default function App() {
       const raw = accRaw.trim();
       const start = raw.indexOf("{");
       const end = raw.lastIndexOf("}");
-      if (start !== -1 && end !== -1 && end > start) {
-        const jsonText = raw.slice(start, end + 1);
-        const parsed = JSON.parse(jsonText);
+      if (start !== -1 && end > start) {
+        const parsed = JSON.parse(raw.slice(start, end + 1));
         if (parsed?.questions?.length) {
           localStorage.setItem("quiz", JSON.stringify(parsed.questions));
           setQuiz(parsed.questions);
@@ -221,16 +195,20 @@ export default function App() {
     setLoading(false);
   }
 
-  /* ---------- streaming helper for /teach ---------- */
+  async function teachFromDoc(query, mode = "lesson") {
+    setMessages((prev) => [...prev, { role: "user", content: query }]);
+    setLoading(true);
+    const res = await postStream(TEACH_URL, { query, mode });
+    await streamToMessages(res);
+    setLoading(false);
+  }
+
   async function streamToMessages(res) {
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
     const assistantIndex = messages.length;
-
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let accRaw = "",
-      accMasked = "";
-
+    let accRaw = "";
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -241,384 +219,206 @@ export default function App() {
           const j = JSON.parse(line);
           if (j?.message?.content) {
             accRaw += j.message.content;
-            accMasked = maskAnswersForDisplay(accRaw);
             setMessages((prev) => {
               const copy = [...prev];
-              copy[assistantIndex] = { role: "assistant", content: accMasked };
+              copy[assistantIndex] = { role: "assistant", content: accRaw };
               return copy;
             });
           }
         } catch {}
       }
     }
-    // if quiz JSON came back, save it
-    try {
-      const raw = accRaw.trim();
-      const s = raw.indexOf("{"),
-        e = raw.lastIndexOf("}");
-      if (s !== -1 && e !== -1 && e > s) {
-        const jsonText = raw.slice(s, e + 1);
-        const parsed = JSON.parse(jsonText);
-        if (parsed?.questions?.length) {
-          localStorage.setItem("quiz", JSON.stringify(parsed.questions));
-          setQuiz(parsed.questions);
-        }
-      }
-    } catch {}
   }
 
-  /* ---------- document-aware calls ---------- */
-  async function teachFromDoc(query) {
-    setMessages((prev) => [...prev, { role: "user", content: query }]);
-    setLoading(true);
-    const res = await postStream(TEACH_URL, { query, mode: "lesson" });
-    await streamToMessages(res);
-    setLoading(false);
-  }
-
-  async function quizFromDoc(query) {
-    setMessages((prev) => [...prev, { role: "user", content: query }]);
-    setLoading(true);
-    const res = await postStream(TEACH_URL, { query, mode: "quiz" });
-    await streamToMessages(res);
-    setLoading(false);
-  }
-
-  /* ---------- topic-panel actions ---------- */
-  async function onTeachClick() {
-    if (!topic.trim()) return;
-    if (docReady) {
-      // TEACH MODE for uploaded doc
-      const q = `Teach "${topic}" using the uploaded document. Start with an analogy, then 3 bullets for core idea, one worked example from the doc, and exactly one check question.`;
-      await teachFromDoc(q);
+  async function handleUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const r = await uploadFile(file);
+    if (r.ok) {
+      setDocReady(true);
+      setDocName(file.name);
+      alert(`✅ Document processed (${r.chunks} chunks).`);
     } else {
-      // normal chat mode
-      await send(`Explain "${topic}" with analogy-first teaching and include one check question at the end.`);
+      alert("Upload failed: " + (r.error || "unknown error"));
     }
+    e.target.value = "";
   }
 
-  async function onCorrelateClick() {
-    const subject = topic || "my topic";
-    if (docReady) {
-      const q = `Co-relate "${subject}" to badminton or cooking (choose one) strictly using the uploaded document as context. Provide a 2-row table and ask one reflection question.`;
-      await teachFromDoc(q);
-    } else {
-      await send(
-        `Create a short co-relation mapping for "${subject}" to badminton or cooking, include a 2-row table and ask one reflection question.`
-      );
-    }
-  }
-
-  async function onQuizClick() {
-    const subject = topic || "my topic";
-    if (docReady) {
-      // QUIZ MODE for uploaded doc (strict JSON)
-      const q = `Create 3 questions on "${subject}" using ONLY the uploaded document. Return STRICT JSON ONLY (no markdown fences).
-{"questions":[
- {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
- {"type":"short","q":"...", "answer":"..."},
- {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
-]}`;
-      await quizFromDoc(q);
-    } else {
-      await send(
-        `Create 3 questions for "${subject}".
-Return STRICT JSON ONLY (no markdown fences).
-{"questions":[
- {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
- {"type":"short","q":"...", "answer":"..."},
- {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
-]}`
-      );
-    }
-  }
-
-  async function onFunClick() {
-    const subject = topic || "my topic";
-    if (docReady) {
-      const q = `Make "${subject}" fun using ONLY the uploaded document: a ~120-word playful scene and one micro-challenge at the end. Keep it tight and clear.`;
-      await teachFromDoc(q);
-    } else {
-      await send(`Make it fun: turn "${subject}" into a 120-word playful scene with one micro-challenge at the end.`);
-    }
+  async function clearDoc() {
+    await fetch(CLEAR_DOC_URL, { method: "POST" });
+    setDocReady(false);
+    setDocName("");
+    localStorage.removeItem("quiz");
+    setQuiz(null);
+    alert("🧹 Cleared document context.");
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        color: "white",
-        background: "linear-gradient(135deg, #7c3aed 0%, #4338ca 40%, #0f172a 100%)",
-      }}
-    >
-      <div style={{ maxWidth: 960, margin: "0 auto", padding: 16 }}>
-        {/* header */}
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 12,
-          }}
-        >
-          <h1 style={{ fontWeight: 800, letterSpacing: 0.5 }}>
-            Learn<span style={{ color: "#f0abfc" }}>Play</span>
-          </h1>
-          <div
-            style={{
-              padding: "6px 10px",
-              borderRadius: 999,
-              fontSize: 12,
-              background: loading ? "rgba(16,185,129,0.35)" : "rgba(16,185,129,0.15)",
-              border: "1px solid rgba(16,185,129,0.45)",
-            }}
-          >
-            {loading ? "Thinking…" : "Ready"}
+    <div className="app-container">
+      {/* floating background orbs */}
+      <div className="bg-orb orb-1"></div>
+      <div className="bg-orb orb-2"></div>
+      <div className="bg-orb orb-3"></div>
+
+      <div className="app-wrapper">
+        {/* Header */}
+        <header className="app-header">
+          <div className="header-left">
+            <div className="logo-circle">
+              <div className="logo-shine"></div>
+              <div className="logo-text">LP</div>
+            </div>
+            <div>
+              <h1 className="app-title">LearnPlay</h1>
+              <p className="app-subtitle">Playful learning powered by AI</p>
+            </div>
+          </div>
+
+          <div className="header-right">
+            <div className="progress-display">
+              <div className="progress-icon">🏅</div>
+              <div className="progress-stats">
+                <div className="progress-label">Score</div>
+                <div className="progress-value">
+                  <strong>{progress.correct || 0}</strong>
+                  <span className="progress-divider">/</span>
+                  {progress.total || 0}
+                </div>
+              </div>
+            </div>
           </div>
         </header>
 
-        {/* progress */}
-        <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-          🏅 Score: {progress.correct || 0}/{progress.total || 0}
-        </p>
-
-        {/* layout */}
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "320px 1fr" }}>
-          {/* left: Topic panel with file upload */}
-          <aside
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            {/* Topic */}
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Topic</label>
-            <input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder='e.g., "Backpropagation" or "Eigenvalues"'
-              style={{
-                width: "100%",
-                marginTop: 6,
-                marginBottom: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                outline: "none",
-                border: "1px solid rgba(255,255,255,0.15)",
-                background: "rgba(255,255,255,0.08)",
-                color: "white",
-              }}
-            />
-
-            {/* Upload (inside topic box area) */}
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Upload PDF/DOCX/TXT</label>
-            <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 10 }}>
+        {/* Layout */}
+        <div className="main-layout">
+          {/* Sidebar */}
+          <aside className="sidebar">
+            <div className="sidebar-section">
+              <label className="input-label">Topic</label>
+              <input
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder='e.g., "Backpropagation"'
+                className="topic-input"
+              />
               <input
                 id="topicFile"
                 type="file"
                 accept=".pdf,.docx,.txt"
                 style={{ display: "none" }}
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  if (!f) return;
-                  const r = await uploadFile(f);
-                  if (r.ok) {
-                    setDocReady(true);
-                    setDocName(f.name);
-                    alert(`✅ Document processed (${r.chunks} chunks). Buttons now use the document context.`);
-                  } else {
-                    alert("Upload failed: " + (r.error || "unknown error"));
-                  }
-                  e.target.value = "";
-                }}
+                onChange={handleUpload}
               />
-              <button
-                type="button"
-                onClick={() => document.getElementById("topicFile").click()}
-                style={{
-                  flexShrink: 0,
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-                title="Attach document"
-              >
-                📎 Attach
-              </button>
-              <button
-                type="button"
-                disabled={!docReady}
-                onClick={async () => {
-                  await fetch(CLEAR_DOC_URL, { method: "POST" });
-                  setDocReady(false);
-                  setDocName("");
-                  localStorage.removeItem("quiz");
-                  setQuiz(null);
-                  alert("🧹 Cleared document context.");
-                }}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: docReady ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)",
-                  opacity: docReady ? 1 : 0.5,
-                }}
-                title="Clear document context"
-              >
-                🧹 Clear
-              </button>
+              <div className="button-group">
+                <button
+                  className="btn-primary"
+                  onClick={() => document.getElementById("topicFile").click()}
+                >
+                  📎 Upload Doc
+                </button>
+                <button className="btn-primary" onClick={clearDoc} disabled={!docReady}>
+                  🧹 Clear Doc
+                </button>
+                <button className="btn-primary" onClick={() => teachFromDoc(`Teach ${topic}`)}>
+                  🎓 Teach Me
+                </button>
+                <button className="btn-tool" onClick={() => send(`Co-relate ${topic} with cooking`)}>
+                  🔗 Co-Relate
+                </button>
+                <button className="btn-tool" onClick={() => send(`Create quiz for ${topic}`)}>
+                  📝 Quiz Me
+                </button>
+                <button className="btn-tool" onClick={() => send(`Make ${topic} fun!`)}>
+                  🎮 Make It Fun
+                </button>
+              </div>
+              {docReady && <p style={{ marginTop: 8 }}>Using document: {docName}</p>}
             </div>
-            {docReady && (
-              <p style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
-                Using: <b>{docName}</b>
-              </p>
-            )}
-
-            {/* Buttons drive teach/quiz against doc if uploaded */}
-            <div style={{ display: "grid", gap: 8 }}>
-              <button
-                onClick={onTeachClick}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  fontWeight: 700,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "linear-gradient(90deg, rgba(217,70,239,0.9), rgba(244,63,94,0.9))",
-                }}
-                title={docReady ? "Teach (document mode)" : "Teach (chat mode)"}
-              >
-                Teach Me
-              </button>
-
-              <button
-                onClick={onCorrelateClick}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-                title={docReady ? "Co-relate from document" : "Co-relate in chat"}
-              >
-                Co-Relate
-              </button>
-
-              <button
-                onClick={onQuizClick}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-                title={docReady ? "Quiz (document mode)" : "Quiz (chat mode)"}
-              >
-                Quiz Me
-              </button>
-
-              <button
-                onClick={onFunClick}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                }}
-                title={docReady ? "Make it fun from document" : "Make it fun in chat"}
-              >
-                Make It Fun
-              </button>
-            </div>
-
-            <p style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>
-              {docReady ? "Document mode active • buttons use uploaded context" : "Chat mode • upload a doc to enable document mode"}
-            </p>
           </aside>
 
-          {/* right: chat + quiz */}
-          <main
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-              display: "flex",
-              flexDirection: "column",
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            {/* chat window */}
-            <div ref={viewRef} style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
-              {messages
-                .filter((m) => m.role !== "system")
-                .map((m, i) => (
-                  <Bubble key={i} role={m.role}>
-                    {m.content}
-                  </Bubble>
-                ))}
-              {loading && <div style={{ opacity: 0.7, fontSize: 14 }}>…streaming</div>}
-            </div>
-
-            {/* simple composer (no uploader here) */}
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!userInput.trim()) return;
-                await send(userInput);
-                setUserInput("");
-              }}
-              style={{ display: "flex", gap: 8, marginTop: 8 }}
-            >
-              <input
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                placeholder="Ask or answer the check question…"
-                style={{
-                  flex: 1,
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  outline: "none",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(255,255,255,0.08)",
-                  color: "white",
-                }}
-              />
-              <button
-                style={{
-                  padding: "10px 16px",
-                  borderRadius: 12,
-                  fontWeight: 700,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background: "rgba(99,102,241,0.9)",
-                }}
-              >
-                Send
-              </button>
-            </form>
-
-            {/* quiz section */}
-            {Array.isArray(quiz) && quiz.length > 0 && (
-              <div
-                style={{
-                  marginTop: 16,
-                  borderTop: "1px solid rgba(255,255,255,0.1)",
-                  paddingTop: 12,
-                }}
-              >
-                <h3 style={{ fontSize: 16, marginBottom: 8 }}>📘 Quiz Time</h3>
-                {quiz.map((q, i) => (
-                  <QuizQuestion key={i} index={i} q={q} onScored={() => setTick((t) => t + 1)} />
-                ))}
+          {/* Main Content */}
+          <main className="main-content">
+            <div className="chat-container">
+              <div ref={viewRef} className="chat-messages">
+                {messages
+                  .filter((m) => m.role !== "system")
+                  .map((m, i) => (
+                    <Bubble key={i} role={m.role}>
+                      {m.content}
+                    </Bubble>
+                  ))}
+                {loading && (
+                  <div className="typing-indicator">
+                    <div className="typing-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                    <div className="typing-text">Thinking…</div>
+                  </div>
+                )}
               </div>
-            )}
+
+              {/* Chat Input */}
+              <div className="chat-input-wrapper">
+                <div className="chat-input-container">
+                  <input
+                    value={userInput}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    placeholder="Type your question..."
+                    className="chat-input"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        send(userInput);
+                        setUserInput("");
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      send(userInput);
+                      setUserInput("");
+                    }}
+                    className="btn-send"
+                    disabled={!userInput.trim()}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M2 10L18 2L10 18L8 11L2 10Z" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quiz Section */}
+              {Array.isArray(quiz) && quiz.length > 0 && (
+                <div className="quiz-section">
+                  <div className="quiz-header">
+                    <h3 className="quiz-title">
+                      <span className="quiz-icon">📘</span> Quiz Time
+                    </h3>
+                    <button
+                      className="btn-clear-quiz"
+                      onClick={() => {
+                        localStorage.removeItem("quiz");
+                        setQuiz(null);
+                      }}
+                    >
+                      Clear Quiz
+                    </button>
+                  </div>
+                  <div className="quiz-grid">
+                    {quiz.map((q, i) => (
+                      <QuizQuestion
+                        key={i}
+                        index={i}
+                        q={q}
+                        onScored={() => setTick((t) => t + 1)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </main>
         </div>
       </div>
