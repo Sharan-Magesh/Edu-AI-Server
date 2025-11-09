@@ -9,6 +9,25 @@ const SYSTEM_PROMPT = `You are LearnPlay, a playful tutor. Teach with (1) analog
 Never dump definitions before the analogy. Ask exactly one check question.`;
 
 /* ---------- helpers ---------- */
+async function postStream(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("http://localhost:5179/upload", {
+    method: "POST",
+    body: fd,
+  });
+  return res.json();
+}
+
 function maskAnswersForDisplay(text) {
   // strip possible markdown fences and hide answers in any JSON the model prints
   return text
@@ -181,6 +200,72 @@ export default function App() {
     setLoading(false);
   }
 
+  // ---------- Document teaching functions ----------
+
+// helper to stream results into messages
+  async function streamToMessages(res) {
+   setMessages(prev => [...prev, { role: "assistant", content: "" }]);
+   const assistantIndex = messages.length;
+
+   const reader = res.body.getReader();
+   const decoder = new TextDecoder();
+   let accRaw = "", accMasked = "";
+
+   while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value);
+    const lines = chunk.split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const j = JSON.parse(line);
+        if (j?.message?.content) {
+          accRaw += j.message.content;
+          accMasked = maskAnswersForDisplay(accRaw);
+          setMessages(prev => {
+            const copy = [...prev];
+            copy[assistantIndex] = { role: "assistant", content: accMasked };
+            return copy;
+          });
+        }
+      } catch {}
+    }
+  }
+
+  // try parsing JSON quiz data
+   try {
+    const raw = accRaw.trim();
+    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+    if (s !== -1 && e !== -1 && e > s) {
+      const jsonText = raw.slice(s, e + 1);
+      const parsed = JSON.parse(jsonText);
+      if (parsed?.questions?.length) {
+        localStorage.setItem("quiz", JSON.stringify(parsed.questions));
+        setQuiz(parsed.questions);
+      }
+    }
+  } catch {}
+}
+
+// send doc -> teach mode
+  async function sendDocTeach(prompt) {
+  setMessages(prev => [...prev, { role: "user", content: prompt }]);
+  setLoading(true);
+  const res = await postStream("http://localhost:5179/teach", { query: prompt, mode: "lesson" });
+  await streamToMessages(res);
+  setLoading(false);
+}
+
+// send doc -> quiz mode
+async function sendDocQuiz(prompt) {
+  setMessages(prev => [...prev, { role: "user", content: prompt }]);
+  setLoading(true);
+  const res = await postStream("http://localhost:5179/teach", { query: prompt, mode: "quiz" });
+  await streamToMessages(res);
+  setLoading(false);
+}
+
+
   function startExplain() {
     if (!topic.trim()) return;
     send(`Explain "${topic}" with analogy-first teaching and include one check question at the end.`);
@@ -241,6 +326,68 @@ export default function App() {
             }}
           >
             <label style={{ fontSize: 12, opacity: 0.8 }}>Topic</label>
+            {/* ---- Document Upload ---- */}
+<label style={{ fontSize: 12, opacity: 0.8 }}>Upload PDF/DOCX/TXT</label>
+<input
+  type="file"
+  accept=".pdf,.docx,.txt"
+  onChange={async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const r = await uploadFile(f);       // uses the helper function
+    if (r.ok) {
+      alert(`✅ Document processed (${r.chunks} chunks). Now use “Teach Doc” or “Quiz from Doc”.`);
+    } else {
+      alert("Upload failed: " + (r.error || "unknown error"));
+    }
+  }}
+  style={{
+    width: "100%",
+    marginTop: 6,
+    marginBottom: 10,
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.15)",
+    background: "rgba(255,255,255,0.08)",
+    color: "white",
+  }}
+/>
+
+    <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
+    <button
+    onClick={() =>
+      sendDocTeach(
+        "Teach this document in analogy-first style with one worked example and a check question."
+      )
+     }
+     style={{
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: "1px solid rgba(255,255,255,0.15)",
+      background: "rgba(255,255,255,0.08)",
+     }}
+  >
+     Teach Doc
+    </button>
+    <button
+     onClick={() =>
+      sendDocQuiz("Generate a 3-question quiz from this document (strict JSON).")
+    }
+    style={{
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: "1px solid rgba(255,255,255,0.15)",
+      background: "rgba(255,255,255,0.08)",
+    }}
+   >
+     Quiz from Doc
+    </button>
+    </div>
+
+    <hr style={{ margin: "12px 0", opacity: 0.2 }} />
+
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
