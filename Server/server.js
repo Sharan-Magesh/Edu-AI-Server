@@ -201,26 +201,59 @@ app.post("/teach", async (req, res) => {
     const context = scored.map((s) => DOC.chunks[s.i]).join("\n---\n");
 
     const system = `You are LearnPlay, a playful tutor. Always:
-1) Start with an analogy.
-2) Give 3 bullet core ideas.
-3) Provide one worked example from the provided context.
-4) Ask exactly one check question.
-Use ONLY the provided "Source Excerpts". Simplify aggressively.`;
+Begin with a vivid analogy that makes the concept feel alive.
+
+Present exactly 3 short, punchy bullet points capturing the core idea.
+
+Show one simple worked example drawn from the provided context.
+
+End with exactly one check question to test understanding.
+
+Rules:
+
+Use ONLY the provided "Source Excerpts."
+
+Keep it light, friendly, and crystal clear.
+
+Simplify aggressively — no jargon, just insight`;
 
     const lessonUser = `User query: ${query}
 
 Source Excerpts (use these to teach):
 ${context}`;
 
-    const quizUser = `From the Source Excerpts, generate STRICT JSON ONLY with 3 questions:
-{"questions":[
- {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
- {"type":"short","q":"...", "answer":"..."},
- {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
-]}
-No text outside JSON.
+    const quizUser = `
+From the "Source Excerpts", generate STRICT JSON ONLY with exactly 3 questions in this structure:
+
+{
+  "questions": [
+    {
+      "type": "mcq",
+      "q": "Question text here",
+      "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
+      "answer": "B"
+    },
+    {
+      "type": "short",
+      "q": "Question text here",
+      "answer": "Expected short answer text"
+    },
+    {
+      "type": "explain",
+      "q": "Question text here",
+      "rubric": ["keyword1", "keyword2"]
+    }
+  ]
+}
+
+Rules:
+- Output STRICTLY valid JSON (no comments, markdown, or extra text).
+- Each question must be clearly answerable using ONLY the Source Excerpts.
+- Keep questions concise and factual.
+- Do NOT include explanations, hints, or commentary.
 
 Source Excerpts:
+`
 ${context}`;
 
     const messages = [
