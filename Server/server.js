@@ -13,15 +13,23 @@ app.use(cors());
 app.use(express.json());
 
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
-const MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b"; // or qwen2.5:3b etc.
+const MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b"; // e.g., qwen2.5:3b
+
+// ---- limits to prevent OOM ----
+const MAX_DOC_CHARS = 200_000;   // hard cap on extracted text (~200 KB)
+const MAX_CHUNKS = 180;          // cap number of chunks embedded
+const DEFAULT_CHUNK_SIZE = 1200; // slightly smaller chunks help memory
+const DEFAULT_OVERLAP = 200;
 
 app.get("/health", (_req, res) => res.json({ ok: true, model: MODEL }));
 
-// ---- chat proxy (existing)
+// ---------------- Chat proxy ----------------
 app.post("/chat", async (req, res) => {
   try {
     const { messages } = req.body || {};
-    if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages must be an array" });
+    }
 
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Transfer-Encoding", "chunked");
@@ -34,7 +42,7 @@ app.post("/chat", async (req, res) => {
 
     if (!r.ok || !r.body) {
       const txt = await r.text().catch(() => "");
-      res.write(txt || JSON.stringify({ error: "ollama request failed" }) + "\n");
+      res.write((txt && txt + "\n") || JSON.stringify({ error: "ollama request failed" }) + "\n");
       return res.end();
     }
 
@@ -53,34 +61,48 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-/* ---------------- document learning ---------------- */
+/* --------------- Document learning --------------- */
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 // In-memory store of the most recent doc
 let DOC = { chunks: [], embeds: [], embedModel: "nomic-embed-text" };
 
-// chunk helper
-function chunkText(text, chunkSize = 1300, overlap = 200) {
+// chunk helper (guarantees progress; no infinite loop at the end)
+function chunkText(text, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_OVERLAP) {
+  // guard: ensure overlap < chunkSize
+  if (!(Number.isFinite(chunkSize) && chunkSize > 0)) chunkSize = 1200;
+  if (!(Number.isFinite(overlap) && overlap >= 0)) overlap = 200;
+  if (overlap >= chunkSize) overlap = Math.floor(chunkSize / 3);
+
   const out = [];
   let i = 0;
+
   while (i < text.length) {
     const end = Math.min(i + chunkSize, text.length);
     out.push(text.slice(i, end));
-    i = end - overlap;
-    if (i < 0) i = 0;
+
+    // if we've reached the end, break to avoid reusing the same end index
+    if (end === text.length) break;
+
+    const next = end - overlap;
+    // ensure forward progress
+    i = Math.max(next, i + 1);
   }
-  return out.filter((s) => s.trim().length > 0);
+
+  return out.filter((s) => s && s.trim().length > 0);
 }
+
 
 // cosine similarity
 function cosine(a, b) {
   let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+  const L = Math.min(a.length, b.length);
+  for (let i = 0; i < L; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
 }
 
-// embed texts with Ollama
+// embed texts with Ollama (sequential → low memory + validation)
 async function embedBatch(texts) {
   const res = [];
   for (const t of texts) {
@@ -89,14 +111,21 @@ async function embedBatch(texts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: DOC.embedModel, prompt: t }),
     });
-    if (!r.ok) throw new Error("embedding request failed");
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      throw new Error(`embedding request failed: ${txt || r.status}`);
+    }
     const j = await r.json();
+    if (!j || !Array.isArray(j.embedding)) {
+      throw new Error("embedding not returned (check that 'nomic-embed-text' is pulled and 'ollama serve' is running)");
+    }
     res.push(j.embedding);
   }
   return res;
 }
 
-// Upload: extract -> chunk -> embed
+
+// Upload: extract -> cap -> chunk -> cap -> embed
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no file" });
@@ -117,15 +146,31 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       return res.status(415).json({ error: "unsupported file type" });
     }
 
-    const chunks = chunkText(text);
+    // light cleanup + hard cap
+    text = (text || "").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").slice(0, MAX_DOC_CHARS);
+    if (!text.trim()) return res.status(400).json({ error: "empty document" });
+
+    let chunks = chunkText(text);
+    if (chunks.length > MAX_CHUNKS) chunks = chunks.slice(0, MAX_CHUNKS);
+
     DOC.chunks = chunks;
     DOC.embeds = await embedBatch(chunks);
-    fs.writeFileSync("./latest_doc.json", JSON.stringify({ chunksCount: chunks.length }, null, 2));
+
+    fs.writeFileSync(
+      "./latest_doc.json",
+      JSON.stringify({ chunksCount: chunks.length, cappedChars: text.length }, null, 2)
+    );
 
     res.json({ ok: true, chunks: chunks.length });
   } catch (e) {
     res.status(500).json({ error: e.message || "upload failed" });
   }
+});
+
+// Clear the uploaded doc from memory
+app.post("/clear-doc", (_req, res) => {
+  DOC = { chunks: [], embeds: [], embedModel: "nomic-embed-text" };
+  res.json({ ok: true });
 });
 
 // Teach or Quiz using retrieval on uploaded doc
@@ -147,9 +192,12 @@ app.post("/teach", async (req, res) => {
     const qvec = ej.embedding;
 
     // top 5 chunks
-    const scored = DOC.embeds.map((v, i) => ({ i, score: cosine(qvec, v) }))
-      .sort((a,b)=>b.score-a.score).slice(0,5);
-    const context = scored.map(s => DOC.chunks[s.i]).join("\n---\n");
+    const scored = DOC.embeds
+      .map((v, i) => ({ i, score: cosine(qvec, v) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+    const context = scored.map((s) => DOC.chunks[s.i]).join("\n---\n");
 
     const system = `You are LearnPlay, a playful tutor. Always:
 1) Start with an analogy.
@@ -190,7 +238,7 @@ ${context}`;
 
     if (!r.ok || !r.body) {
       const txt = await r.text().catch(() => "");
-      res.write(txt || JSON.stringify({ error: "ollama request failed" }) + "\n");
+      res.write((txt && txt + "\n") || JSON.stringify({ error: "ollama request failed" }) + "\n");
       return res.end();
     }
 
