@@ -102,6 +102,7 @@ function cosine(a, b) {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
 }
 
+// embed texts with Ollama (sequential → low memory)
 // embed texts with Ollama (sequential → low memory + validation)
 async function embedBatch(texts) {
   const res = [];

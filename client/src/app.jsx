@@ -1,35 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
 
-/* ---------- config ---------- */
-const API_URL = "http://localhost:5179/chat";
+/* ---------- endpoints ---------- */
+const CHAT_URL = "http://localhost:5179/chat";
+const TEACH_URL = "http://localhost:5179/teach";
+const UPLOAD_URL = "http://localhost:5179/upload";
+const CLEAR_DOC_URL = "http://localhost:5179/clear-doc";
 
+/* ---------- tutor system prompt ---------- */
 const SYSTEM_PROMPT = `You are LearnPlay, a playful tutor. Teach with (1) analogy first,
 (2) concise core idea in 3 bullets, (3) one worked example,
 (4) a 1-question check. Keep answers under 180 words unless user asks for more.
 Never dump definitions before the analogy. Ask exactly one check question.`;
 
 /* ---------- helpers ---------- */
-async function postStream(url, body) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return res;
-}
-
-async function uploadFile(file) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await fetch("http://localhost:5179/upload", {
-    method: "POST",
-    body: fd,
-  });
-  return res.json();
-}
-
 function maskAnswersForDisplay(text) {
-  // strip possible markdown fences and hide answers in any JSON the model prints
   return text
     .replace(/```json|```/gi, "")
     .replace(/("answer"\s*:\s*")([^"]*)(")/gi, '$1(hidden)$3')
@@ -50,6 +34,22 @@ function evaluateAnswer(question, userAnswer) {
     return rub.some((k) => text.includes(String(k).toLowerCase()));
   }
   return false;
+}
+
+async function postStream(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(UPLOAD_URL, { method: "POST", body: fd });
+  return res.json();
 }
 
 /* ---------- small UI pieces ---------- */
@@ -83,12 +83,12 @@ function QuizQuestion({ q, index, onScored }) {
     const correct = evaluateAnswer(q, userAns);
     setResult(correct);
 
-    // update progress in localStorage
     const progress = JSON.parse(localStorage.getItem("progress") || "{}");
     progress.total = (progress.total || 0) + 1;
     progress.correct = (progress.correct || 0) + (correct ? 1 : 0);
     localStorage.setItem("progress", JSON.stringify(progress));
-    onScored?.(); // ask parent to re-render
+
+    onScored?.();
   }
 
   return (
@@ -105,9 +105,27 @@ function QuizQuestion({ q, index, onScored }) {
         value={userAns}
         onChange={(e) => setUserAns(e.target.value)}
         placeholder="Your answer (e.g., A, 22, or a sentence)"
-        style={{ marginTop: 8, width: "100%", padding: 8, borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)", color: "white" }}
+        style={{
+          marginTop: 8,
+          width: "100%",
+          padding: 8,
+          borderRadius: 8,
+          border: "1px solid rgba(255,255,255,0.15)",
+          background: "rgba(255,255,255,0.08)",
+          color: "white",
+        }}
       />
-      <button onClick={check} style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontWeight: 700, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(99,102,241,0.9)" }}>
+      <button
+        onClick={check}
+        style={{
+          marginTop: 8,
+          padding: "8px 12px",
+          borderRadius: 10,
+          fontWeight: 700,
+          border: "1px solid rgba(255,255,255,0.15)",
+          background: "rgba(99,102,241,0.9)",
+        }}
+      >
         Check
       </button>
       {result !== null && (
@@ -125,37 +143,45 @@ export default function App() {
   const [messages, setMessages] = useState([{ role: "system", content: SYSTEM_PROMPT }]);
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(false);
+
   const [quiz, setQuiz] = useState(() => {
     const s = localStorage.getItem("quiz");
     return s ? JSON.parse(s) : null;
   });
-  const [tick, setTick] = useState(0); // force re-render when progress changes
+  const [tick, setTick] = useState(0);
+
+  // document-aware flags (lives in Topic panel)
+  const [docReady, setDocReady] = useState(false);
+  const [docName, setDocName] = useState("");
+
   const viewRef = useRef(null);
 
   useEffect(() => {
     viewRef.current?.scrollTo({ top: viewRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
+  const progress = JSON.parse(localStorage.getItem("progress") || "{}");
+
+  /* ---------- normal chat send ---------- */
   async function send(content) {
     const next = [...messages, { role: "user", content }];
     setMessages(next);
     setLoading(true);
 
-    const res = await fetch(API_URL, {
+    const res = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: next, stream: true }),
     });
 
-    // placeholder for streaming assistant message
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
     const assistantIndex = next.length;
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
 
-    let accRaw = ""; // real text (with answers)
-    let accMasked = ""; // UI-masked version
+    let accRaw = "";
+    let accMasked = "";
 
     while (true) {
       const { value, done } = await reader.read();
@@ -174,13 +200,10 @@ export default function App() {
               return copy;
             });
           }
-        } catch {
-          // ignore partial lines
-        }
+        } catch {}
       }
     }
 
-    // Try to parse quiz JSON from RAW text (not the masked one)
     try {
       const raw = accRaw.trim();
       const start = raw.indexOf("{");
@@ -193,86 +216,132 @@ export default function App() {
           setQuiz(parsed.questions);
         }
       }
-    } catch {
-      // ignore non-JSON replies
-    }
+    } catch {}
 
     setLoading(false);
   }
 
-  // ---------- Document teaching functions ----------
-
-// helper to stream results into messages
+  /* ---------- streaming helper for /teach ---------- */
   async function streamToMessages(res) {
-   setMessages(prev => [...prev, { role: "assistant", content: "" }]);
-   const assistantIndex = messages.length;
+    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    const assistantIndex = messages.length;
 
-   const reader = res.body.getReader();
-   const decoder = new TextDecoder();
-   let accRaw = "", accMasked = "";
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let accRaw = "",
+      accMasked = "";
 
-   while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const j = JSON.parse(line);
-        if (j?.message?.content) {
-          accRaw += j.message.content;
-          accMasked = maskAnswersForDisplay(accRaw);
-          setMessages(prev => {
-            const copy = [...prev];
-            copy[assistantIndex] = { role: "assistant", content: accMasked };
-            return copy;
-          });
-        }
-      } catch {}
-    }
-  }
-
-  // try parsing JSON quiz data
-   try {
-    const raw = accRaw.trim();
-    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
-    if (s !== -1 && e !== -1 && e > s) {
-      const jsonText = raw.slice(s, e + 1);
-      const parsed = JSON.parse(jsonText);
-      if (parsed?.questions?.length) {
-        localStorage.setItem("quiz", JSON.stringify(parsed.questions));
-        setQuiz(parsed.questions);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n").filter(Boolean);
+      for (const line of lines) {
+        try {
+          const j = JSON.parse(line);
+          if (j?.message?.content) {
+            accRaw += j.message.content;
+            accMasked = maskAnswersForDisplay(accRaw);
+            setMessages((prev) => {
+              const copy = [...prev];
+              copy[assistantIndex] = { role: "assistant", content: accMasked };
+              return copy;
+            });
+          }
+        } catch {}
       }
     }
-  } catch {}
-}
-
-// send doc -> teach mode
-  async function sendDocTeach(prompt) {
-  setMessages(prev => [...prev, { role: "user", content: prompt }]);
-  setLoading(true);
-  const res = await postStream("http://localhost:5179/teach", { query: prompt, mode: "lesson" });
-  await streamToMessages(res);
-  setLoading(false);
-}
-
-// send doc -> quiz mode
-async function sendDocQuiz(prompt) {
-  setMessages(prev => [...prev, { role: "user", content: prompt }]);
-  setLoading(true);
-  const res = await postStream("http://localhost:5179/teach", { query: prompt, mode: "quiz" });
-  await streamToMessages(res);
-  setLoading(false);
-}
-
-
-  function startExplain() {
-    if (!topic.trim()) return;
-    send(`Explain "${topic}" with analogy-first teaching and include one check question at the end.`);
-    localStorage.setItem("learnplay_topic", topic);
+    // if quiz JSON came back, save it
+    try {
+      const raw = accRaw.trim();
+      const s = raw.indexOf("{"),
+        e = raw.lastIndexOf("}");
+      if (s !== -1 && e !== -1 && e > s) {
+        const jsonText = raw.slice(s, e + 1);
+        const parsed = JSON.parse(jsonText);
+        if (parsed?.questions?.length) {
+          localStorage.setItem("quiz", JSON.stringify(parsed.questions));
+          setQuiz(parsed.questions);
+        }
+      }
+    } catch {}
   }
 
-  const progress = JSON.parse(localStorage.getItem("progress") || "{}");
+  /* ---------- document-aware calls ---------- */
+  async function teachFromDoc(query) {
+    setMessages((prev) => [...prev, { role: "user", content: query }]);
+    setLoading(true);
+    const res = await postStream(TEACH_URL, { query, mode: "lesson" });
+    await streamToMessages(res);
+    setLoading(false);
+  }
+
+  async function quizFromDoc(query) {
+    setMessages((prev) => [...prev, { role: "user", content: query }]);
+    setLoading(true);
+    const res = await postStream(TEACH_URL, { query, mode: "quiz" });
+    await streamToMessages(res);
+    setLoading(false);
+  }
+
+  /* ---------- topic-panel actions ---------- */
+  async function onTeachClick() {
+    if (!topic.trim()) return;
+    if (docReady) {
+      // TEACH MODE for uploaded doc
+      const q = `Teach "${topic}" using the uploaded document. Start with an analogy, then 3 bullets for core idea, one worked example from the doc, and exactly one check question.`;
+      await teachFromDoc(q);
+    } else {
+      // normal chat mode
+      await send(`Explain "${topic}" with analogy-first teaching and include one check question at the end.`);
+    }
+  }
+
+  async function onCorrelateClick() {
+    const subject = topic || "my topic";
+    if (docReady) {
+      const q = `Co-relate "${subject}" to badminton or cooking (choose one) strictly using the uploaded document as context. Provide a 2-row table and ask one reflection question.`;
+      await teachFromDoc(q);
+    } else {
+      await send(
+        `Create a short co-relation mapping for "${subject}" to badminton or cooking, include a 2-row table and ask one reflection question.`
+      );
+    }
+  }
+
+  async function onQuizClick() {
+    const subject = topic || "my topic";
+    if (docReady) {
+      // QUIZ MODE for uploaded doc (strict JSON)
+      const q = `Create 3 questions on "${subject}" using ONLY the uploaded document. Return STRICT JSON ONLY (no markdown fences).
+{"questions":[
+ {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
+ {"type":"short","q":"...", "answer":"..."},
+ {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
+]}`;
+      await quizFromDoc(q);
+    } else {
+      await send(
+        `Create 3 questions for "${subject}".
+Return STRICT JSON ONLY (no markdown fences).
+{"questions":[
+ {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
+ {"type":"short","q":"...", "answer":"..."},
+ {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
+]}`
+      );
+    }
+  }
+
+  async function onFunClick() {
+    const subject = topic || "my topic";
+    if (docReady) {
+      const q = `Make "${subject}" fun using ONLY the uploaded document: a ~120-word playful scene and one micro-challenge at the end. Keep it tight and clear.`;
+      await teachFromDoc(q);
+    } else {
+      await send(`Make it fun: turn "${subject}" into a 120-word playful scene with one micro-challenge at the end.`);
+    }
+  }
 
   return (
     <div
@@ -308,14 +377,14 @@ async function sendDocQuiz(prompt) {
           </div>
         </header>
 
-        {/* progress tracker */}
+        {/* progress */}
         <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
           🏅 Score: {progress.correct || 0}/{progress.total || 0}
         </p>
 
-        {/* two-column layout */}
+        {/* layout */}
         <div style={{ display: "grid", gap: 12, gridTemplateColumns: "320px 1fr" }}>
-          {/* left controls */}
+          {/* left: Topic panel with file upload */}
           <aside
             style={{
               background: "rgba(255,255,255,0.06)",
@@ -325,69 +394,8 @@ async function sendDocQuiz(prompt) {
               backdropFilter: "blur(6px)",
             }}
           >
+            {/* Topic */}
             <label style={{ fontSize: 12, opacity: 0.8 }}>Topic</label>
-            {/* ---- Document Upload ---- */}
-<label style={{ fontSize: 12, opacity: 0.8 }}>Upload PDF/DOCX/TXT</label>
-<input
-  type="file"
-  accept=".pdf,.docx,.txt"
-  onChange={async (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const r = await uploadFile(f);       // uses the helper function
-    if (r.ok) {
-      alert(`✅ Document processed (${r.chunks} chunks). Now use “Teach Doc” or “Quiz from Doc”.`);
-    } else {
-      alert("Upload failed: " + (r.error || "unknown error"));
-    }
-  }}
-  style={{
-    width: "100%",
-    marginTop: 6,
-    marginBottom: 10,
-    padding: "8px 10px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.15)",
-    background: "rgba(255,255,255,0.08)",
-    color: "white",
-  }}
-/>
-
-    <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
-    <button
-    onClick={() =>
-      sendDocTeach(
-        "Teach this document in analogy-first style with one worked example and a check question."
-      )
-     }
-     style={{
-      width: "100%",
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(255,255,255,0.15)",
-      background: "rgba(255,255,255,0.08)",
-     }}
-  >
-     Teach Doc
-    </button>
-    <button
-     onClick={() =>
-      sendDocQuiz("Generate a 3-question quiz from this document (strict JSON).")
-    }
-    style={{
-      width: "100%",
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(255,255,255,0.15)",
-      background: "rgba(255,255,255,0.08)",
-    }}
-   >
-     Quiz from Doc
-    </button>
-    </div>
-
-    <hr style={{ margin: "12px 0", opacity: 0.2 }} />
-
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
@@ -404,27 +412,91 @@ async function sendDocQuiz(prompt) {
                 color: "white",
               }}
             />
-            <button
-              onClick={startExplain}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 12,
-                fontWeight: 700,
-                border: "1px solid rgba(255,255,255,0.15)",
-                background: "linear-gradient(90deg, rgba(217,70,239,0.9), rgba(244,63,94,0.9))",
-              }}
-            >
-              Teach Me
-            </button>
 
-            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            {/* Upload (inside topic box area) */}
+            <label style={{ fontSize: 12, opacity: 0.8 }}>Upload PDF/DOCX/TXT</label>
+            <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 10 }}>
+              <input
+                id="topicFile"
+                type="file"
+                accept=".pdf,.docx,.txt"
+                style={{ display: "none" }}
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  const r = await uploadFile(f);
+                  if (r.ok) {
+                    setDocReady(true);
+                    setDocName(f.name);
+                    alert(`✅ Document processed (${r.chunks} chunks). Buttons now use the document context.`);
+                  } else {
+                    alert("Upload failed: " + (r.error || "unknown error"));
+                  }
+                  e.target.value = "";
+                }}
+              />
               <button
-                onClick={() =>
-                  send(
-                    `Create a short co-relation mapping for "${topic || "my topic"}" to badminton or cooking, include a 2-row table and ask one reflection question.`
-                  )
-                }
+                type="button"
+                onClick={() => document.getElementById("topicFile").click()}
+                style={{
+                  flexShrink: 0,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  background: "rgba(255,255,255,0.08)",
+                }}
+                title="Attach document"
+              >
+                📎 Attach
+              </button>
+              <button
+                type="button"
+                disabled={!docReady}
+                onClick={async () => {
+                  await fetch(CLEAR_DOC_URL, { method: "POST" });
+                  setDocReady(false);
+                  setDocName("");
+                  localStorage.removeItem("quiz");
+                  setQuiz(null);
+                  alert("🧹 Cleared document context.");
+                }}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  background: docReady ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)",
+                  opacity: docReady ? 1 : 0.5,
+                }}
+                title="Clear document context"
+              >
+                🧹 Clear
+              </button>
+            </div>
+            {docReady && (
+              <p style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
+                Using: <b>{docName}</b>
+              </p>
+            )}
+
+            {/* Buttons drive teach/quiz against doc if uploaded */}
+            <div style={{ display: "grid", gap: 8 }}>
+              <button
+                onClick={onTeachClick}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  fontWeight: 700,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  background: "linear-gradient(90deg, rgba(217,70,239,0.9), rgba(244,63,94,0.9))",
+                }}
+                title={docReady ? "Teach (document mode)" : "Teach (chat mode)"}
+              >
+                Teach Me
+              </button>
+
+              <button
+                onClick={onCorrelateClick}
                 style={{
                   width: "100%",
                   padding: "10px 12px",
@@ -432,23 +504,13 @@ async function sendDocQuiz(prompt) {
                   border: "1px solid rgba(255,255,255,0.15)",
                   background: "rgba(255,255,255,0.08)",
                 }}
+                title={docReady ? "Co-relate from document" : "Co-relate in chat"}
               >
                 Co-Relate
               </button>
+
               <button
-                onClick={() =>
-                  send(
-                    `Create 3 questions for "${topic || "my topic"}".
-Return STRICT JSON ONLY (no markdown fences).
-Schema:
-{"questions":[
- {"type":"mcq","q":"...", "options":["A) ...","B) ...","C) ...","D) ..."], "answer":"B"},
- {"type":"short","q":"...", "answer":"..."},
- {"type":"explain","q":"...", "rubric":["keyword1","keyword2"]}
-]}
-Do not add commentary. Do not include any text outside the JSON.`
-                  )
-                }
+                onClick={onQuizClick}
                 style={{
                   width: "100%",
                   padding: "10px 12px",
@@ -456,15 +518,13 @@ Do not add commentary. Do not include any text outside the JSON.`
                   border: "1px solid rgba(255,255,255,0.15)",
                   background: "rgba(255,255,255,0.08)",
                 }}
+                title={docReady ? "Quiz (document mode)" : "Quiz (chat mode)"}
               >
                 Quiz Me
               </button>
+
               <button
-                onClick={() =>
-                  send(
-                    `Make it fun: turn "${topic || "my topic"}" into a 120-word playful scene with one micro-challenge at the end.`
-                  )
-                }
+                onClick={onFunClick}
                 style={{
                   width: "100%",
                   padding: "10px 12px",
@@ -472,17 +532,18 @@ Do not add commentary. Do not include any text outside the JSON.`
                   border: "1px solid rgba(255,255,255,0.15)",
                   background: "rgba(255,255,255,0.08)",
                 }}
+                title={docReady ? "Make it fun from document" : "Make it fun in chat"}
               >
                 Make It Fun
               </button>
             </div>
 
             <p style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>
-              Model: local Ollama • Streams in real-time
+              {docReady ? "Document mode active • buttons use uploaded context" : "Chat mode • upload a doc to enable document mode"}
             </p>
           </aside>
 
-          {/* right chat + quiz */}
+          {/* right: chat + quiz */}
           <main
             style={{
               background: "rgba(255,255,255,0.06)",
@@ -506,12 +567,12 @@ Do not add commentary. Do not include any text outside the JSON.`
               {loading && <div style={{ opacity: 0.7, fontSize: 14 }}>…streaming</div>}
             </div>
 
-            {/* input row */}
+            {/* simple composer (no uploader here) */}
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!userInput.trim()) return;
-                send(userInput);
+                await send(userInput);
                 setUserInput("");
               }}
               style={{ display: "flex", gap: 8, marginTop: 8 }}
